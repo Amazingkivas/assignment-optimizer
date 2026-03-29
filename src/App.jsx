@@ -61,6 +61,27 @@ const createStateFromExample = () => {
   }
 }
 
+
+const adaptExternalExample = (data) => {
+  const parsedN = Number(data?.n)
+  const parsedK = Number(data?.k)
+  if (!Number.isInteger(parsedN) || parsedN < 1 || !Number.isInteger(parsedK) || parsedK < 1) {
+    throw new Error('Файл примера: поля n и k должны быть целыми положительными числами.')
+  }
+
+  return {
+    n: parsedN,
+    k: parsedK,
+    c: normalizeMatrix(data.c, parsedN),
+    d: Array.from({ length: parsedK }, (_, idx) => normalizeMatrix(data?.d?.[idx], parsedN)),
+    b: vector(parsedK).map((_, i) => String(data?.b?.[i] ?? '')),
+    lambda0: vector(parsedK).map((_, i) => String(data?.lambda0?.[i] ?? '0')),
+    maxIter: String(data?.maxIter ?? data?.max_iter ?? 200),
+    eps: String(data?.eps ?? 0.000001),
+    stepMode: data?.stepMode ?? data?.step_mode ?? 'harmonic',
+    stepConst: String(data?.stepConst ?? data?.step_const ?? 0.2),
+  }
+}
 function clampPage(page, totalPages) {
   if (totalPages <= 0) return 0
   return Math.max(0, Math.min(page, totalPages - 1))
@@ -192,8 +213,7 @@ export default function App() {
     }
   }
 
-  const loadExample = () => {
-    const state = createStateFromExample()
+  const applyState = (state) => {
     setNInput(String(state.n))
     setKInput(String(state.k))
     setN(state.n)
@@ -212,6 +232,19 @@ export default function App() {
     setWarnings([])
     setResult(null)
     setError('')
+  }
+
+  const loadExample = () => applyState(createStateFromExample())
+
+  const loadExampleFromFile = async () => {
+    try {
+      const res = await fetch('/examples/assignment_optimizer_example.json')
+      if (!res.ok) throw new Error('Не удалось загрузить example JSON файл.')
+      const json = await res.json()
+      applyState(adaptExternalExample(json))
+    } catch (e) {
+      setError(e.message)
+    }
   }
 
   const collectWarnings = (payload) => {
@@ -283,7 +316,8 @@ export default function App() {
           <h1>Задача о назначениях с ограничениями</h1>
           <p>Интерфейс с постраничным вводом матриц без прокрутки, загрузкой примера и проверкой данных.</p>
           <div className="hero-actions">
-            <button type="button" className="secondary" onClick={loadExample}>Загрузить пример</button>
+            <button type="button" className="secondary" onClick={loadExample}>Загрузить встроенный пример</button>
+            <button type="button" className="secondary" onClick={loadExampleFromFile}>Загрузить пример из файла</button>
             <button type="button" className="primary" onClick={solve}>Решить</button>
           </div>
         </header>
