@@ -1,13 +1,28 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 
 from flask import Flask, jsonify, request, send_from_directory
 
 from backend.solver import SolverError, solve_problem
 
 
-DIST_DIR = Path(__file__).resolve().parent / "dist"
+def _resolve_dist_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        meipass = Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
+        bundled_dist = meipass / "dist"
+        if bundled_dist.exists():
+            return bundled_dist
+
+        dist_next_to_exe = Path(sys.executable).resolve().parent / "dist"
+        if dist_next_to_exe.exists():
+            return dist_next_to_exe
+
+    return Path(__file__).resolve().parent / "dist"
+
+
+DIST_DIR = _resolve_dist_dir()
 app = Flask(__name__, static_folder=str(DIST_DIR), static_url_path="")
 
 
