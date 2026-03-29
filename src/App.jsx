@@ -1,410 +1,748 @@
-import { useMemo, useState } from 'react'
-
-const MATRIX_ROWS_PER_PAGE = 6
-const MATRIX_COLS_PER_PAGE = 6
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 const EXAMPLE = {
-  n: 6,
-  k: 2,
-  c: [
-    [12, 9, 7, 14, 11, 10],
-    [8, 13, 6, 12, 15, 9],
-    [14, 10, 11, 8, 7, 13],
-    [9, 12, 14, 7, 10, 8],
-    [11, 8, 13, 9, 12, 14],
-    [10, 14, 9, 11, 8, 12],
+  assets: 3,
+  protections: 5,
+  lambda: 0.5,
+  defuzzMethod: 'centroid',
+  cFuzzy: [
+    ['80', '90', '100'],
+    ['70', '76', '82'],
+    ['24', '30', '36'],
+    ['30', '35', '41'],
+    ['26', '30', '34'],
   ],
-  d: [
-    [
-      [1, 0, 1, 0, 0, 1],
-      [0, 1, 0, 1, 0, 0],
-      [1, 0, 0, 1, 1, 0],
-      [0, 1, 1, 0, 0, 1],
-      [1, 0, 1, 0, 1, 0],
-      [0, 1, 0, 1, 0, 1],
-    ],
-    [
-      [4, 3, 5, 6, 4, 3],
-      [5, 4, 3, 5, 6, 4],
-      [6, 5, 4, 3, 5, 6],
-      [3, 6, 5, 4, 3, 5],
-      [4, 3, 6, 5, 4, 3],
-      [5, 4, 3, 6, 5, 4],
-    ],
+  dFuzzy: [
+    ['30', '40', '50'],
+    ['15', '20', '25'],
+    ['10', '14', '18'],
+    ['8', '12', '16'],
+    ['6', '10', '14'],
   ],
-  b: [5, 22],
-  lambda0: [0, 0],
-  maxIter: 250,
-  eps: 0.000001,
-  stepMode: 'harmonic',
-  stepConst: 0.2,
+  costs: [
+    ['15', '10', '5', '4', '3'],
+    ['27', '18', '12', '6', '6'],
+    ['40', '25', '12', '11', '8'],
+  ],
+  budgets: ['20', '39', '48'],
 }
 
-const matrix = (r, c, v = '') => Array.from({ length: r }, () => Array.from({ length: c }, () => String(v)))
-const vector = (len, v = '') => Array.from({ length: len }, () => String(v))
+const LAMBDA_PRESETS = [0, 0.25, 0.5, 0.75, 1]
+const TRI_ROWS_PER_PAGE = 8
+const COST_ROWS_PER_PAGE = 8
+const COST_COLS_PER_PAGE = 6
 
-const normalizeMatrix = (source, n) => matrix(n, n).map((row, i) => row.map((_, j) => String(source?.[i]?.[j] ?? '')))
+const FALLBACK_DEFUZZ = [
+  { value: 'centroid', label: 'Центроид: (a + b + c) / 3' },
+  { value: 'yager', label: 'Индекс Ягера: (a + 2b + c) / 4' },
+  { value: 'graded_mean', label: 'Интегральное среднее: (a + 4b + c) / 6' },
+  { value: 'mode', label: 'Мода: b' },
+]
 
-const createStateFromExample = () => {
-  const { n, k, c, d, b, lambda0, maxIter, eps, stepMode, stepConst } = EXAMPLE
+const createMatrix = (rows, columns, fill = '') =>
+  Array.from({ length: rows }, () => Array.from({ length: columns }, () => fill))
+
+const createVector = (size, fill = '') => Array.from({ length: size }, () => fill)
+
+function normalizeTriangularRows(rows) {
+  return rows.map((row) => row.map((value) => String(value)))
+}
+
+function createExampleState() {
   return {
-    n,
-    k,
-    c: normalizeMatrix(c, n),
-    d: Array.from({ length: k }, (_, idx) => normalizeMatrix(d[idx], n)),
-    b: vector(k).map((_, i) => String(b[i] ?? '')),
-    lambda0: vector(k).map((_, i) => String(lambda0[i] ?? '')),
-    maxIter: String(maxIter),
-    eps: String(eps),
-    stepMode,
-    stepConst: String(stepConst),
+    assets: EXAMPLE.assets,
+    protections: EXAMPLE.protections,
+    lambda: EXAMPLE.lambda,
+    defuzzMethod: EXAMPLE.defuzzMethod,
+    cFuzzy: normalizeTriangularRows(EXAMPLE.cFuzzy),
+    dFuzzy: normalizeTriangularRows(EXAMPLE.dFuzzy),
+    costs: EXAMPLE.costs.map((row) => row.map((value) => String(value))),
+    budgets: EXAMPLE.budgets.map((value) => String(value)),
   }
 }
 
-
-const adaptExternalExample = (data) => {
-  const parsedN = Number(data?.n)
-  const parsedK = Number(data?.k)
-  if (!Number.isInteger(parsedN) || parsedN < 1 || !Number.isInteger(parsedK) || parsedK < 1) {
-    throw new Error('Файл примера: поля n и k должны быть целыми положительными числами.')
-  }
-
-  return {
-    n: parsedN,
-    k: parsedK,
-    c: normalizeMatrix(data.c, parsedN),
-    d: Array.from({ length: parsedK }, (_, idx) => normalizeMatrix(data?.d?.[idx], parsedN)),
-    b: vector(parsedK).map((_, i) => String(data?.b?.[i] ?? '')),
-    lambda0: vector(parsedK).map((_, i) => String(data?.lambda0?.[i] ?? '0')),
-    maxIter: String(data?.maxIter ?? data?.max_iter ?? 200),
-    eps: String(data?.eps ?? 0.000001),
-    stepMode: data?.stepMode ?? data?.step_mode ?? 'harmonic',
-    stepConst: String(data?.stepConst ?? data?.step_const ?? 0.2),
-  }
+function resizeTriangular(matrix, rows) {
+  const next = matrix.map((row) => [...row])
+  while (next.length < rows) next.push(['', '', ''])
+  return next.slice(0, rows)
 }
+
+function resizeCosts(matrix, rows, columns) {
+  const next = matrix.map((row) => [...row])
+  while (next.length < rows) next.push(createVector(columns))
+  return next.slice(0, rows).map((row) => {
+    const current = [...row]
+    while (current.length < columns) current.push('')
+    return current.slice(0, columns)
+  })
+}
+
+function resizeVector(vector, size) {
+  const next = [...vector]
+  while (next.length < size) next.push('')
+  return next.slice(0, size)
+}
+
+function parseNumber(value) {
+  if (value === '' || value === null || value === undefined) {
+    throw new Error('Обнаружены пустые поля. Заполните все значения.')
+  }
+
+  const raw = typeof value === 'string' ? value.trim() : String(value)
+  if (raw === '') {
+    throw new Error('Обнаружены пустые поля. Заполните все значения.')
+  }
+
+  const parsed = Number(raw)
+  if (!Number.isFinite(parsed)) {
+    throw new Error('Есть некорректные числовые значения. Проверьте ввод.')
+  }
+  return parsed
+}
+
 function clampPage(page, totalPages) {
   if (totalPages <= 0) return 0
   return Math.max(0, Math.min(page, totalPages - 1))
 }
 
-function parseNumber(value, label) {
-  if (value === null || value === undefined || String(value).trim() === '') {
-    throw new Error(`Поле «${label}» не заполнено.`)
-  }
-  const parsed = Number(String(value).trim())
-  if (!Number.isFinite(parsed)) {
-    throw new Error(`Поле «${label}» содержит нечисловое значение.`)
-  }
-  return parsed
+function formatValue(value, precision = 3) {
+  if (typeof value !== 'number') return String(value)
+  return value.toFixed(precision)
 }
 
-function Pagination({ page, totalPages, onChange }) {
-  if (totalPages <= 1) return null
-  return (
-    <div className="pager">
-      <button type="button" onClick={() => onChange(0)} disabled={page === 0}>{'<<'}</button>
-      <button type="button" onClick={() => onChange(page - 1)} disabled={page === 0}>{'<'}</button>
-      <span>Страница {page + 1} / {totalPages}</span>
-      <button type="button" onClick={() => onChange(page + 1)} disabled={page === totalPages - 1}>{'>'}</button>
-      <button type="button" onClick={() => onChange(totalPages - 1)} disabled={page === totalPages - 1}>{'>>'}</button>
-    </div>
-  )
-}
+function App() {
+  const initial = useMemo(createExampleState, [])
+  const toastTimerRef = useRef(null)
+  const fileInputRef = useRef(null)
 
-function MatrixEditor({ title, data, setData, rowPage, setRowPage, colPage, setColPage }) {
-  const rows = data.length
-  const cols = data[0]?.length ?? 0
-  const rowPages = Math.max(1, Math.ceil(rows / MATRIX_ROWS_PER_PAGE))
-  const colPages = Math.max(1, Math.ceil(cols / MATRIX_COLS_PER_PAGE))
+  const [assets, setAssets] = useState(initial.assets)
+  const [protections, setProtections] = useState(initial.protections)
+  const [assetsInput, setAssetsInput] = useState(String(initial.assets))
+  const [protectionsInput, setProtectionsInput] = useState(String(initial.protections))
+  const [lambdaValue, setLambdaValue] = useState(initial.lambda)
+  const [defuzzMethod, setDefuzzMethod] = useState(initial.defuzzMethod)
 
-  const rowStart = rowPage * MATRIX_ROWS_PER_PAGE
-  const rowEnd = Math.min(rows, rowStart + MATRIX_ROWS_PER_PAGE)
-  const colStart = colPage * MATRIX_COLS_PER_PAGE
-  const colEnd = Math.min(cols, colStart + MATRIX_COLS_PER_PAGE)
+  const [cFuzzy, setCFuzzy] = useState(initial.cFuzzy)
+  const [dFuzzy, setDFuzzy] = useState(initial.dFuzzy)
+  const [costs, setCosts] = useState(initial.costs)
+  const [budgets, setBudgets] = useState(initial.budgets)
 
-  return (
-    <section className="card">
-      <div className="section-head">
-        <h3>{title}</h3>
-      </div>
-      <div className="matrix-wrap">
-        <table className="matrix">
-          <tbody>
-            {Array.from({ length: rowEnd - rowStart }, (_, i) => {
-              const realI = rowStart + i
-              return (
-                <tr key={realI}>
-                  {Array.from({ length: colEnd - colStart }, (_, j) => {
-                    const realJ = colStart + j
-                    return (
-                      <td key={realJ}>
-                        <input
-                          value={data[realI][realJ]}
-                          onChange={(e) => {
-                            const next = data.map((r) => [...r])
-                            next[realI][realJ] = e.target.value
-                            setData(next)
-                          }}
-                        />
-                      </td>
-                    )
-                  })}
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-      </div>
-      <div className="matrix-pagers">
-        <Pagination page={rowPage} totalPages={rowPages} onChange={(p) => setRowPage(clampPage(p, rowPages))} />
-        <Pagination page={colPage} totalPages={colPages} onChange={(p) => setColPage(clampPage(p, colPages))} />
-      </div>
-    </section>
-  )
-}
+  const [defuzzOptions, setDefuzzOptions] = useState(FALLBACK_DEFUZZ)
+  const [triPage, setTriPage] = useState(0)
+  const [costRowPage, setCostRowPage] = useState(0)
+  const [costColPage, setCostColPage] = useState(0)
 
-export default function App() {
-  const initial = useMemo(createStateFromExample, [])
-
-  const [nInput, setNInput] = useState(String(initial.n))
-  const [kInput, setKInput] = useState(String(initial.k))
-  const [n, setN] = useState(initial.n)
-  const [k, setK] = useState(initial.k)
-  const [c, setC] = useState(initial.c)
-  const [d, setD] = useState(initial.d)
-  const [b, setB] = useState(initial.b)
-  const [lambda0, setLambda0] = useState(initial.lambda0)
-  const [maxIter, setMaxIter] = useState(initial.maxIter)
-  const [eps, setEps] = useState(initial.eps)
-  const [stepMode, setStepMode] = useState(initial.stepMode)
-  const [stepConst, setStepConst] = useState(initial.stepConst)
-
-  const [cRowPage, setCRowPage] = useState(0)
-  const [cColPage, setCColPage] = useState(0)
-  const [dPages, setDPages] = useState(Array.from({ length: initial.k }, () => ({ row: 0, col: 0 })))
-
-  const [warnings, setWarnings] = useState([])
-  const [result, setResult] = useState(null)
+  const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [toast, setToast] = useState('')
+  const [status, setStatus] = useState('Результат ещё не вычислен.')
+  const [result, setResult] = useState(null)
 
-  const applyDimensions = () => {
-    try {
-      const nextN = parseNumber(nInput, 'n')
-      const nextK = parseNumber(kInput, 'K')
-      if (!Number.isInteger(nextN) || nextN < 1 || !Number.isInteger(nextK) || nextK < 1) {
-        throw new Error('n и K должны быть целыми положительными числами.')
-      }
+  const showToast = (message) => {
+    setToast(message)
+    if (toastTimerRef.current) {
+      clearTimeout(toastTimerRef.current)
+    }
+    toastTimerRef.current = setTimeout(() => {
+      setToast('')
+      toastTimerRef.current = null
+    }, 2600)
+  }
 
-      setN(nextN)
-      setK(nextK)
-      setC((prev) => matrix(nextN, nextN).map((row, i) => row.map((_, j) => prev[i]?.[j] ?? '')))
-      setD((prev) => Array.from({ length: nextK }, (_, kk) => matrix(nextN, nextN).map((row, i) => row.map((_, j) => prev[kk]?.[i]?.[j] ?? ''))))
-      setB((prev) => vector(nextK).map((_, i) => prev[i] ?? ''))
-      setLambda0((prev) => vector(nextK).map((_, i) => prev[i] ?? '0'))
-      setCRowPage(0)
-      setCColPage(0)
-      setDPages(Array.from({ length: nextK }, () => ({ row: 0, col: 0 })))
-      setWarnings([])
-      setResult(null)
-      setError('')
-    } catch (e) {
-      setError(e.message)
-      setResult(null)
+  const applyDimensionValue = (field, rawValue) => {
+    const parsed = Number(rawValue)
+    if (!Number.isInteger(parsed) || parsed < 1) {
+      showToast(`Поле ${field} должно быть целым числом не меньше 1.`)
+      if (field === 'm') setAssetsInput(String(assets))
+      if (field === 'n') setProtectionsInput(String(protections))
+      return
+    }
+
+    if (field === 'm') {
+      setAssets(parsed)
+      setAssetsInput(String(parsed))
+    }
+    if (field === 'n') {
+      setProtections(parsed)
+      setProtectionsInput(String(parsed))
     }
   }
 
-  const applyState = (state) => {
-    setNInput(String(state.n))
-    setKInput(String(state.k))
-    setN(state.n)
-    setK(state.k)
-    setC(state.c)
-    setD(state.d)
-    setB(state.b)
-    setLambda0(state.lambda0)
-    setMaxIter(state.maxIter)
-    setEps(state.eps)
-    setStepMode(state.stepMode)
-    setStepConst(state.stepConst)
-    setCRowPage(0)
-    setCColPage(0)
-    setDPages(Array.from({ length: state.k }, () => ({ row: 0, col: 0 })))
-    setWarnings([])
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
+    }
+  }, [])
+
+  useEffect(() => {
+    fetch('/api/meta')
+      .then((response) => response.json())
+      .then((data) => {
+        if (Array.isArray(data.defuzz_methods) && data.defuzz_methods.length) {
+          setDefuzzOptions(data.defuzz_methods)
+        }
+      })
+      .catch(() => {
+        setDefuzzOptions(FALLBACK_DEFUZZ)
+      })
+  }, [])
+
+  useEffect(() => {
+    setCFuzzy((current) => resizeTriangular(current, protections))
+    setDFuzzy((current) => resizeTriangular(current, protections))
+    setCosts((current) => resizeCosts(current, assets, protections))
+    setBudgets((current) => resizeVector(current, assets))
     setResult(null)
-    setError('')
-  }
+    setStatus('Параметры изменены. Выполните новый расчёт.')
+  }, [assets, protections])
 
-  const loadExample = () => applyState(createStateFromExample())
+  const triTotalPages = Math.max(1, Math.ceil(protections / TRI_ROWS_PER_PAGE))
+  const rowTotalPages = Math.max(1, Math.ceil(assets / COST_ROWS_PER_PAGE))
+  const colTotalPages = Math.max(1, Math.ceil(protections / COST_COLS_PER_PAGE))
 
-  const loadExampleFromFile = async () => {
-    try {
-      const res = await fetch('/examples/assignment_optimizer_example.json')
-      if (!res.ok) throw new Error('Не удалось загрузить example JSON файл.')
-      const json = await res.json()
-      applyState(adaptExternalExample(json))
-    } catch (e) {
-      setError(e.message)
+  useEffect(() => {
+    setTriPage((page) => clampPage(page, triTotalPages))
+    setCostRowPage((page) => clampPage(page, rowTotalPages))
+    setCostColPage((page) => clampPage(page, colTotalPages))
+  }, [triTotalPages, rowTotalPages, colTotalPages])
+
+  const triStart = triPage * TRI_ROWS_PER_PAGE
+  const triEnd = Math.min(protections, triStart + TRI_ROWS_PER_PAGE)
+
+  const costRowStart = costRowPage * COST_ROWS_PER_PAGE
+  const costRowEnd = Math.min(assets, costRowStart + COST_ROWS_PER_PAGE)
+  const costColStart = costColPage * COST_COLS_PER_PAGE
+  const costColEnd = Math.min(protections, costColStart + COST_COLS_PER_PAGE)
+
+  const normalizeUploadedMatrix = (matrixData, rowCount, colCount, label) => {
+    if (!Array.isArray(matrixData) || matrixData.length !== rowCount) {
+      throw new Error(`Размерности в файле не соответствуют ожидаемому формату для ${label}.`)
     }
-  }
 
-  const collectWarnings = (payload) => {
-    const nextWarnings = []
-    if (payload.step_mode === 'constant' && payload.step_const > 1) {
-      nextWarnings.push('Для постоянного шага значение step_const > 1 может вызывать неустойчивость сходимости.')
-    }
-    payload.c.forEach((row, i) => row.forEach((value, j) => {
-      if (value < 0) nextWarnings.push(`C[${i + 1},${j + 1}] < 0: это необычно для классической задачи назначений.`)
-    }))
-    payload.b.forEach((value, i) => {
-      if (value < 0) nextWarnings.push(`b${i + 1} < 0: ограничение может стать некорректным.`)
+    return matrixData.map((row) => {
+      if (!Array.isArray(row) || row.length !== colCount) {
+        throw new Error(`Размерности в файле не соответствуют ожидаемому формату для ${label}.`)
+      }
+      return row.map((value) => String(value))
     })
-    return nextWarnings
   }
 
-  const solve = async () => {
+  const loadFromConfigFile = async (file) => {
+    const text = await file.text()
+    let config
     try {
+      config = JSON.parse(text)
+    } catch {
+      throw new Error('Файл имеет некорректный JSON-формат.')
+    }
+
+    const nextAssets = Number(config.assets)
+    const nextProtections = Number(config.protections)
+    if (!Number.isInteger(nextAssets) || !Number.isInteger(nextProtections) || nextAssets < 1 || nextProtections < 1) {
+      throw new Error('В файле должны быть корректные целые значения размерностей m и n.')
+    }
+
+    const cUploaded = normalizeUploadedMatrix(config.cFuzzy, nextProtections, 3, 'c̃')
+    const dUploaded = normalizeUploadedMatrix(config.dFuzzy, nextProtections, 3, 'd̃')
+    const costsUploaded = normalizeUploadedMatrix(config.costs, nextAssets, nextProtections, 'A')
+
+    if (!Array.isArray(config.budgets) || config.budgets.length !== nextAssets) {
+      throw new Error('Размерности в файле не соответствуют ожидаемому формату для b.')
+    }
+
+    const lambdaUploaded = Number(config.lambda)
+    if (!Number.isFinite(lambdaUploaded) || lambdaUploaded < 0 || lambdaUploaded > 1) {
+      throw new Error('В файле должно быть корректное значение λ в диапазоне [0, 1].')
+    }
+
+    const methodUploaded = String(config.defuzzMethod)
+    const methodExists = defuzzOptions.some((option) => option.value === methodUploaded)
+    if (!methodExists) {
+      throw new Error('Метод дефаззификации в файле не поддерживается.')
+    }
+
+    setAssets(nextAssets)
+    setProtections(nextProtections)
+    setAssetsInput(String(nextAssets))
+    setProtectionsInput(String(nextProtections))
+    setLambdaValue(lambdaUploaded)
+    setDefuzzMethod(methodUploaded)
+    setCFuzzy(cUploaded)
+    setDFuzzy(dUploaded)
+    setCosts(costsUploaded)
+    setBudgets(config.budgets.map((value) => String(value)))
+    setTriPage(0)
+    setCostRowPage(0)
+    setCostColPage(0)
+    setError('')
+    setResult(null)
+    setStatus('Данные из файла успешно загружены.')
+  }
+
+  const handleLoadFileClick = () => {
+    if (!fileInputRef.current) return
+    fileInputRef.current.value = ''
+    fileInputRef.current.click()
+  }
+
+  const handleConfigFileChange = async (event) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+
+    try {
+      await loadFromConfigFile(file)
+    } catch (loadError) {
+      showToast(loadError.message)
+      setError(loadError.message)
+    }
+  }
+
+  const clearAll = () => {
+    setCFuzzy(createMatrix(protections, 3))
+    setDFuzzy(createMatrix(protections, 3))
+    setCosts(createMatrix(assets, protections))
+    setBudgets(createVector(assets))
+    setError('')
+    setResult(null)
+    setStatus('Поля очищены.')
+  }
+
+  const updateTriCell = (setter, matrixData, rowIndex, columnIndex, value) => {
+    const next = matrixData.map((row) => [...row])
+    next[rowIndex][columnIndex] = value
+    setter(next)
+  }
+
+  const updateCostCell = (rowIndex, columnIndex, value) => {
+    const next = costs.map((row) => [...row])
+    next[rowIndex][columnIndex] = value
+    setCosts(next)
+  }
+
+  const updateBudgetCell = (rowIndex, value) => {
+    const next = [...budgets]
+    next[rowIndex] = value
+    setBudgets(next)
+  }
+
+  const displayedSolution = result?.solution_original ?? Array.from({ length: protections }, () => 0)
+  const visualRef = useRef(null)
+  const [gridShape, setGridShape] = useState({ cols: 1, rows: 1 })
+
+  const recalcGridShape = useCallback(() => {
+    const node = visualRef.current
+    const n = Math.max(1, displayedSolution.length)
+    if (!node) {
+      const cols = Math.ceil(Math.sqrt(n))
+      setGridShape({ cols, rows: Math.ceil(n / cols) })
+      return
+    }
+
+    const width = Math.max(1, node.clientWidth)
+    const height = Math.max(1, node.clientHeight)
+
+    let bestCols = 1
+    let bestRows = n
+    let bestScore = Number.POSITIVE_INFINITY
+    let bestArea = 0
+
+    for (let cols = 1; cols <= n; cols += 1) {
+      const rows = Math.ceil(n / cols)
+      const cellW = width / cols
+      const cellH = height / rows
+      const ratioPenalty = Math.abs(Math.log(cellW / Math.max(cellH, 1e-6)))
+      const area = cellW * cellH
+
+      if (ratioPenalty < bestScore - 1e-6 || (Math.abs(ratioPenalty - bestScore) <= 1e-6 && area > bestArea)) {
+        bestScore = ratioPenalty
+        bestArea = area
+        bestCols = cols
+        bestRows = rows
+      }
+    }
+
+    setGridShape({ cols: bestCols, rows: bestRows })
+  }, [displayedSolution.length])
+
+  useEffect(() => {
+    recalcGridShape()
+    const node = visualRef.current
+    if (!node || typeof ResizeObserver === 'undefined') return
+
+    const observer = new ResizeObserver(() => recalcGridShape())
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [recalcGridShape])
+
+  const validateClientData = (payload) => {
+    const checkTriangular = (rows) => {
+      rows.forEach((row) => {
+        if (!(row[0] <= row[1] && row[1] <= row[2])) {
+          throw new Error('Для нечётких параметров должно выполняться условие a ≤ b ≤ c.')
+        }
+      })
+    }
+
+    checkTriangular(payload.c_fuzzy)
+    checkTriangular(payload.d_fuzzy)
+
+    payload.cost_matrix.forEach((row) => {
+      row.forEach((value) => {
+        if (value < 0) {
+          throw new Error('Матрица A должна содержать только неотрицательные значения.')
+        }
+      })
+    })
+
+    payload.budgets.forEach((value) => {
+      if (value < 0) {
+        throw new Error('Вектор b должен содержать только неотрицательные значения.')
+      }
+    })
+
+    payload.cost_matrix.forEach((row, rowIndex) => {
+      const rowMax = Math.max(...row)
+      if (rowMax > payload.budgets[rowIndex]) {
+        throw new Error('Должно выполняться условие: для каждой ГИА максимум по A не превышает b.')
+      }
+    })
+  }
+
+  const handleSolve = async () => {
+    try {
+      setLoading(true)
       setError('')
-      setWarnings([])
+      setStatus('Вычисление...')
+      setToast('')
 
       const payload = {
-        n: parseNumber(nInput, 'n'),
-        k: parseNumber(kInput, 'K'),
-        c: c.map((row, i) => row.map((value, j) => parseNumber(value, `C[${i + 1},${j + 1}]`))),
-        d: d.map((matrixData, kk) => matrixData.map((row, i) => row.map((value, j) => parseNumber(value, `D${kk + 1}[${i + 1},${j + 1}]`)))),
-        b: b.map((value, i) => parseNumber(value, `b${i + 1}`)),
-        lambda0: lambda0.map((value, i) => parseNumber(value, `lambda0[${i + 1}]`)),
-        max_iter: parseNumber(maxIter, 'max_iter'),
-        eps: parseNumber(eps, 'eps'),
-        step_mode: stepMode,
-        step_const: parseNumber(stepConst, 'step_const'),
+        lambda: lambdaValue,
+        defuzz_method: defuzzMethod,
+        c_fuzzy: cFuzzy.map((row) => row.map((value) => parseNumber(value))),
+        d_fuzzy: dFuzzy.map((row) => row.map((value) => parseNumber(value))),
+        cost_matrix: costs.map((row) => row.map((value) => parseNumber(value))),
+        budgets: budgets.map((value) => parseNumber(value)),
       }
 
-      if (!Number.isInteger(payload.n) || payload.n < 1 || !Number.isInteger(payload.k) || payload.k < 1) {
-        throw new Error('n и K должны быть целыми положительными числами.')
-      }
-      if (!Number.isInteger(payload.max_iter) || payload.max_iter < 1) {
-        throw new Error('max_iter должен быть положительным целым числом.')
-      }
-      if (payload.eps <= 0) {
-        throw new Error('eps должен быть больше 0.')
-      }
-      if (payload.lambda0.some((v) => v < 0)) {
-        throw new Error('Все значения lambda0 должны быть неотрицательными.')
-      }
+      validateClientData(payload)
 
-      const nextWarnings = collectWarnings(payload)
-      setWarnings(nextWarnings)
-
-      const res = await fetch('/api/solve', {
+      const response = await fetch('/api/solve', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error ?? 'Ошибка вычисления')
+      const data = await response.json()
+      if (!response.ok) {
+        const message = data.error || 'Сервер не смог решить задачу.'
+        showToast(message)
+        throw new Error(message)
+      }
+
       setResult(data)
-    } catch (e) {
-      setError(e.message)
-      setResult(null)
+      setStatus('Расчёт завершён.')
+    } catch (solveError) {
+      showToast(solveError.message)
+      setError(solveError.message)
+      setStatus('Ошибка расчёта.')
+    } finally {
+      setLoading(false)
     }
   }
 
   return (
-    <div className="app-shell">
-      <div className="app">
-        <header className="hero card">
-          <h1>Задача о назначениях с ограничениями</h1>
-          <p>Интерфейс с постраничным вводом матриц без прокрутки, загрузкой примера и проверкой данных.</p>
-          <div className="hero-actions">
-            <button type="button" className="secondary" onClick={loadExample}>Загрузить встроенный пример</button>
-            <button type="button" className="secondary" onClick={loadExampleFromFile}>Загрузить пример из файла</button>
-            <button type="button" className="primary" onClick={solve}>Решить</button>
-          </div>
-        </header>
+    <div className="app-screen">
+      {toast ? <div className="toast">{toast}</div> : null}
 
-        <section className="card controls-grid">
-          <label>n
-            <input value={nInput} onChange={(e) => setNInput(e.target.value)} />
+      <section className="panel config-panel">
+        <div className="controls-row">
+          <label className="field">
+            <span>m (ГИА)</span>
+            <input
+              type="number"
+              min="1"
+              value={assetsInput}
+              onChange={(event) => setAssetsInput(event.target.value)}
+              onBlur={(event) => applyDimensionValue('m', event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  applyDimensionValue('m', event.currentTarget.value)
+                  event.currentTarget.blur()
+                }
+              }}
+            />
           </label>
-          <label>K
-            <input value={kInput} onChange={(e) => setKInput(e.target.value)} />
+
+          <label className="field">
+            <span>n (СЗИ)</span>
+            <input
+              type="number"
+              min="1"
+              value={protectionsInput}
+              onChange={(event) => setProtectionsInput(event.target.value)}
+              onBlur={(event) => applyDimensionValue('n', event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  applyDimensionValue('n', event.currentTarget.value)
+                  event.currentTarget.blur()
+                }
+              }}
+            />
           </label>
-          <label>max_iter
-            <input value={maxIter} onChange={(e) => setMaxIter(e.target.value)} />
-          </label>
-          <label>eps
-            <input value={eps} onChange={(e) => setEps(e.target.value)} />
-          </label>
-          <label>step_mode
-            <select value={stepMode} onChange={(e) => setStepMode(e.target.value)}>
-              <option value="harmonic">harmonic (1/(t+1))</option>
-              <option value="constant">constant</option>
+
+          <label className="field field--wide">
+            <span>Метод дефаззификации</span>
+            <select value={defuzzMethod} onChange={(event) => setDefuzzMethod(event.target.value)}>
+              {defuzzOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
             </select>
           </label>
-          <label>step_const
-            <input value={stepConst} onChange={(e) => setStepConst(e.target.value)} />
-          </label>
-          <button type="button" className="secondary apply-btn" onClick={applyDimensions}>Применить размеры</button>
-        </section>
 
-        <MatrixEditor
-          title={`Матрица C (${n}x${n})`}
-          data={c}
-          setData={setC}
-          rowPage={cRowPage}
-          setRowPage={setCRowPage}
-          colPage={cColPage}
-          setColPage={setCColPage}
-        />
-
-        {Array.from({ length: k }, (_, idx) => (
-          <section className="card" key={idx}>
-            <MatrixEditor
-              title={`Матрица D${idx + 1} (${n}x${n})`}
-              data={d[idx] ?? matrix(n, n)}
-              setData={(mat) => setD((prev) => prev.map((m, i) => (i === idx ? mat : m)))}
-              rowPage={dPages[idx]?.row ?? 0}
-              setRowPage={(row) => setDPages((prev) => prev.map((p, i) => (i === idx ? { ...p, row } : p)))}
-              colPage={dPages[idx]?.col ?? 0}
-              setColPage={(col) => setDPages((prev) => prev.map((p, i) => (i === idx ? { ...p, col } : p)))}
+          <div className="field field--lambda">
+            <span>λ = {lambdaValue.toFixed(2)}</span>
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.01"
+              value={lambdaValue}
+              onChange={(event) => setLambdaValue(Number(event.target.value))}
             />
-            <div className="vectors">
-              <label>b{idx + 1}
-                <input value={b[idx] ?? ''} onChange={(e) => setB((prev) => prev.map((v, i) => (i === idx ? e.target.value : v)))} />
-              </label>
-              <label>lambda0[{idx + 1}]
-                <input value={lambda0[idx] ?? ''} onChange={(e) => setLambda0((prev) => prev.map((v, i) => (i === idx ? e.target.value : v)))} />
-              </label>
+            <div className="preset-row">
+              {LAMBDA_PRESETS.map((preset) => (
+                <button
+                  key={preset}
+                  type="button"
+                  className={preset === lambdaValue ? 'preset preset--active' : 'preset'}
+                  onClick={() => setLambdaValue(preset)}
+                >
+                  {preset.toFixed(2)}
+                </button>
+              ))}
             </div>
-          </section>
-        ))}
+          </div>
 
-        {warnings.length > 0 && (
-          <section className="warn card">
-            <h3>Предупреждения</h3>
-            <ul>
-              {warnings.map((warning) => <li key={warning}>{warning}</li>)}
-            </ul>
-          </section>
+          <div className="field field--actions">
+            <button type="button" className="btn btn--secondary" onClick={handleLoadFileClick}>
+              Загрузить файл
+            </button>
+            <button type="button" className="btn btn--ghost" onClick={clearAll}>
+              Очистить
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="application/json,.json"
+              className="hidden-file-input"
+              onChange={handleConfigFileChange}
+            />
+            <button type="button" className="btn btn--primary" onClick={handleSolve} disabled={loading}>
+              {loading ? 'Считаю...' : 'Рассчитать'}
+            </button>
+          </div>
+        </div>
+
+        <div className="tables-row">
+          <div className="table-block">
+            <TableTitle title="c̃j" subtitle={`${triStart + 1}-${triEnd} из ${protections}`} />
+            <TriangularTable
+              rowPrefix="СЗИ"
+              start={triStart}
+              end={triEnd}
+              values={cFuzzy}
+              onChange={(rowIndex, colIndex, value) => updateTriCell(setCFuzzy, cFuzzy, rowIndex, colIndex, value)}
+            />
+          </div>
+
+          <div className="table-block">
+            <TableTitle title="d̃j" subtitle={`${triStart + 1}-${triEnd} из ${protections}`} />
+            <TriangularTable
+              rowPrefix="СЗИ"
+              start={triStart}
+              end={triEnd}
+              values={dFuzzy}
+              onChange={(rowIndex, colIndex, value) => updateTriCell(setDFuzzy, dFuzzy, rowIndex, colIndex, value)}
+            />
+          </div>
+
+          <div className="table-block table-block--wide">
+            <TableTitle
+              title="A и b"
+              subtitle={`строки ${costRowStart + 1}-${costRowEnd}/${assets}, столбцы ${costColStart + 1}-${costColEnd}/${protections}`}
+            />
+            <CostTable
+              rowStart={costRowStart}
+              rowEnd={costRowEnd}
+              colStart={costColStart}
+              colEnd={costColEnd}
+              values={costs}
+              budgets={budgets}
+              onCellChange={updateCostCell}
+              onBudgetChange={updateBudgetCell}
+            />
+          </div>
+        </div>
+
+        <div className="pagers-row">
+          <Pager
+            label="Страницы c̃j/d̃j"
+            page={triPage}
+            total={triTotalPages}
+            onPrev={() => setTriPage((page) => clampPage(page - 1, triTotalPages))}
+            onNext={() => setTriPage((page) => clampPage(page + 1, triTotalPages))}
+          />
+          <Pager
+            label="Строки матрицы A"
+            page={costRowPage}
+            total={rowTotalPages}
+            onPrev={() => setCostRowPage((page) => clampPage(page - 1, rowTotalPages))}
+            onNext={() => setCostRowPage((page) => clampPage(page + 1, rowTotalPages))}
+          />
+          <Pager
+            label="Столбцы матрицы A"
+            page={costColPage}
+            total={colTotalPages}
+            onPrev={() => setCostColPage((page) => clampPage(page - 1, colTotalPages))}
+            onNext={() => setCostColPage((page) => clampPage(page + 1, colTotalPages))}
+          />
+        </div>
+      </section>
+
+      <section className="panel result-panel">
+        <h2>Результаты</h2>
+        <div className="status-box">{status}</div>
+
+        {result ? (
+          <div className="result-solution">
+            <div><strong>x*</strong> = ({result.solution_original.join(', ')})</div>
+            <div><strong>Выбранные СЗИ:</strong> {result.selected_original_indices.length ? result.selected_original_indices.join(', ') : 'нет выбранных СЗИ'}</div>
+            <div><strong>F(x*) =</strong> {formatValue(result.objective, 6)}</div>
+          </div>
+        ) : (
+          <div className="result-empty">Ожидание расчёта.</div>
         )}
 
-        {error ? <section className="error card">{error}</section> : null}
+        <div className="szi-visual" ref={visualRef} style={{ '--szi-cols': gridShape.cols, '--szi-rows': gridShape.rows }}>
+          {displayedSolution.map((value, index) => (
+            <div key={index} className={value === 1 ? 'szi-tile szi-tile--selected' : 'szi-tile'} title={`СЗИ ${index + 1}: ${value === 1 ? 'выбрано' : 'не выбрано'}`}>
+              {index + 1}
+            </div>
+          ))}
+        </div>
 
-        {result && (
-          <section className="result card">
-            <h2>Результат</h2>
-            <p>Лучшее назначение (1-based): {result.best_assignment_one_based.join(', ')}</p>
-            <p>Целевая функция: {result.best_objective}</p>
-            <p>Субградиент: [{result.best_subgradient.join(', ')}]</p>
-            <p>Итерация: {result.best_iteration}, всего: {result.iterations_done}</p>
-          </section>
-        )}
+        {error ? <div className="error-box">{error}</div> : null}
+      </section>
+    </div>
+  )
+}
 
-        <section className="card">
-          <h3>Пример JSON</h3>
-          <pre>{JSON.stringify(EXAMPLE, null, 2)}</pre>
-        </section>
+function TableTitle({ title, subtitle }) {
+  return (
+    <div className="table-title">
+      <strong>{title}</strong>
+      <span>{subtitle}</span>
+    </div>
+  )
+}
+
+function TriangularTable({ rowPrefix, start, end, values, onChange }) {
+  return (
+    <table className="matrix-table">
+      <thead>
+        <tr>
+          <th>{rowPrefix}</th>
+          <th>a</th>
+          <th>b</th>
+          <th>c</th>
+        </tr>
+      </thead>
+      <tbody>
+        {Array.from({ length: end - start }, (_, offset) => {
+          const rowIndex = start + offset
+          return (
+            <tr key={rowIndex}>
+              <th>{rowPrefix} {rowIndex + 1}</th>
+              {[0, 1, 2].map((col) => (
+                <td key={col}>
+                  <input
+                    type="number"
+                    step="0.001"
+                    value={values[rowIndex]?.[col] ?? ''}
+                    onChange={(event) => onChange(rowIndex, col, event.target.value)}
+                  />
+                </td>
+              ))}
+            </tr>
+          )
+        })}
+      </tbody>
+    </table>
+  )
+}
+
+function CostTable({ rowStart, rowEnd, colStart, colEnd, values, budgets, onCellChange, onBudgetChange }) {
+  const columnIndices = Array.from({ length: colEnd - colStart }, (_, offset) => colStart + offset)
+
+  return (
+    <table className="matrix-table">
+      <thead>
+        <tr>
+          <th>ГИА</th>
+          {columnIndices.map((colIndex) => (
+            <th key={colIndex}>СЗИ {colIndex + 1}</th>
+          ))}
+          <th>b</th>
+        </tr>
+      </thead>
+      <tbody>
+        {Array.from({ length: rowEnd - rowStart }, (_, offset) => {
+          const rowIndex = rowStart + offset
+          return (
+            <tr key={rowIndex}>
+              <th>ГИА {rowIndex + 1}</th>
+              {columnIndices.map((colIndex) => (
+                <td key={`${rowIndex}-${colIndex}`}>
+                  <input
+                    type="number"
+                    step="0.001"
+                    value={values[rowIndex]?.[colIndex] ?? ''}
+                    onChange={(event) => onCellChange(rowIndex, colIndex, event.target.value)}
+                  />
+                </td>
+              ))}
+              <td>
+                <input
+                  type="number"
+                  step="0.001"
+                  value={budgets[rowIndex] ?? ''}
+                  onChange={(event) => onBudgetChange(rowIndex, event.target.value)}
+                />
+              </td>
+            </tr>
+          )
+        })}
+      </tbody>
+    </table>
+  )
+}
+
+function Pager({ label, page, total, onPrev, onNext }) {
+  return (
+    <div className="pager">
+      <span>{label}</span>
+      <div className="pager-controls">
+        <button type="button" onClick={onPrev} disabled={page <= 0}>
+          ←
+        </button>
+        <strong>{page + 1}/{total}</strong>
+        <button type="button" onClick={onNext} disabled={page >= total - 1}>
+          →
+        </button>
       </div>
     </div>
   )
 }
+
+export default App
