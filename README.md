@@ -32,6 +32,28 @@ npm run dev
 
 Фронтенд работает на `http://localhost:5173`, API проксируется на `http://127.0.0.1:8080`.
 
+
+### Launcher (Python)
+
+```bash
+python launcher.py
+```
+
+Скрипт поднимает Flask-приложение на `http://127.0.0.1:8080` и автоматически открывает его в браузере.
+
+### Сборка EXE (PyInstaller)
+
+```bash
+python build_exe.py
+```
+
+Скрипт автоматически:
+1. устанавливает frontend-зависимости (`npm install`),
+2. собирает фронтенд (`npm run build`),
+3. собирает единый исполняемый файл через PyInstaller.
+
+Готовый файл появляется в папке `dist/` (например, `dist/AssignmentOptimizer.exe` на Windows).
+
 ## Отчёт
 
 В репозитории добавлен отчёт: `report_implementation.tex`.
