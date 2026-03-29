@@ -1,0 +1,10 @@
+body { margin: 0; font-family: Inter, Arial, sans-serif; background: #f5f7fb; }
+.app { padding: 20px; max-width: 1200px; margin: 0 auto; }
+.controls { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+label { display: flex; gap: 6px; align-items: center; }
+input, select, button { padding: 6px 8px; }
+.matrix input { width: 72px; }
+.matrix td { padding: 2px; }
+.solve { margin-top: 16px; font-size: 16px; }
+.error { color: #b00020; margin-top: 12px; }
+.result { background: white; margin-top: 16px; border-radius: 8px; padding: 12px; }
