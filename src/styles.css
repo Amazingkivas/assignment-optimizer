@@ -384,3 +384,21 @@ select {
 .hidden-file-input {
   display: none;
 }
+
+
+.controls-row--assignment {
+  grid-template-columns: 96px 96px 110px 120px 170px 110px minmax(180px, 1fr);
+}
+
+.tables-row--assignment {
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1.4fr) minmax(0, 0.9fr);
+}
+
+.table-block--narrow {
+  grid-template-rows: auto auto;
+}
+
+.vector-card {
+  display: grid;
+  gap: 8px;
+}
