@@ -54,6 +54,36 @@ const parseNumber = (value, label) => {
   return parsed
 }
 
+
+const normalizeExampleData = (data) => {
+  const n = Number(data?.n)
+  const k = Number(data?.k)
+  if (!Number.isInteger(n) || n < 1 || !Number.isInteger(k) || k < 1) {
+    throw new Error('Пример содержит некорректные n/k.')
+  }
+
+  const c = createMatrix(n, n).map((row, i) => row.map((_, j) => String(data?.c?.[i]?.[j] ?? '')))
+  const d = Array.from({ length: k }, (_, kk) =>
+    createMatrix(n, n).map((row, i) => row.map((_, j) => String(data?.d?.[kk]?.[i]?.[j] ?? ''))),
+  )
+
+  const b = createVector(k).map((_, i) => String(data?.b?.[i] ?? ''))
+  const lambda0 = createVector(k).map((_, i) => String(data?.lambda0?.[i] ?? '0'))
+
+  return {
+    n,
+    k,
+    c,
+    d,
+    b,
+    lambda0,
+    maxIter: String(data?.max_iter ?? data?.maxIter ?? 200),
+    eps: String(data?.eps ?? 0.000001),
+    stepMode: String(data?.step_mode ?? data?.stepMode ?? 'harmonic'),
+    stepConst: String(data?.step_const ?? data?.stepConst ?? 0.2),
+  }
+}
+
 function App() {
   const initial = useMemo(() => EXAMPLE, [])
 
@@ -92,6 +122,42 @@ function App() {
   const rowEnd = Math.min(n, rowStart + ROWS_PER_PAGE)
   const colStart = colPage * COLS_PER_PAGE
   const colEnd = Math.min(n, colStart + COLS_PER_PAGE)
+
+
+  const applyLoadedState = (next) => {
+    setN(next.n)
+    setK(next.k)
+    setNInput(String(next.n))
+    setKInput(String(next.k))
+    setC(next.c)
+    setD(next.d)
+    setB(next.b)
+    setLambda0(next.lambda0)
+    setMaxIter(next.maxIter)
+    setEps(next.eps)
+    setStepMode(next.stepMode)
+    setStepConst(next.stepConst)
+    setRowPage(0)
+    setColPage(0)
+    setConstraintPage(0)
+    setError('')
+    setResult(null)
+  }
+
+  const loadBuiltInExample = () => {
+    applyLoadedState(normalizeExampleData(EXAMPLE))
+  }
+
+  const loadExampleFromFile = async () => {
+    try {
+      const response = await fetch('/examples/assignment_optimizer_example.json')
+      if (!response.ok) throw new Error('Не удалось загрузить файл примера.')
+      const json = await response.json()
+      applyLoadedState(normalizeExampleData(json))
+    } catch (loadError) {
+      setError(loadError.message)
+    }
+  }
 
   const applyDimensions = () => {
     try {
@@ -188,7 +254,9 @@ function App() {
             <input value={stepConst} onChange={(event) => setStepConst(event.target.value)} />
           </label>
           <div className="field field--actions">
-            <button type="button" className="btn btn--secondary" onClick={applyDimensions}>Применить размеры</button>
+            <button type="button" className="btn btn--secondary" onClick={loadBuiltInExample}>Встроенный пример</button>
+            <button type="button" className="btn btn--secondary" onClick={loadExampleFromFile}>Пример из файла</button>
+            <button type="button" className="btn btn--ghost" onClick={applyDimensions}>Применить размеры</button>
             <button type="button" className="btn btn--primary" onClick={solve}>Решить</button>
           </div>
         </div>
