@@ -1,0 +1,150 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage[T2A]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[russian]{babel}
+\usepackage{amsmath,amssymb}
+\usepackage{geometry}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\geometry{margin=2cm}
+
+\title{Отчёт по реализации программного средства\\для задачи о назначениях с ограничениями}
+\author{Проект \texttt{assignment-optimizer}}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Цель работы}
+Разработать программное средство для приближённого решения задачи о назначениях с дополнительными ограничениями вида
+\begin{equation}
+\sum_{i=1}^{n}\sum_{j=1}^{n} d_{ij}^{k}x_{ij} - b_k \le 0,\quad k=1,\dots,K,
+\end{equation}
+где $X=\{x_{ij}\}$ --- матрица назначений, $x_{ij}\in\{0,1\}$, и выполнены стандартные условия задачи о назначениях:
+каждый исполнитель назначается ровно на одну работу и каждая работа получает ровно одного исполнителя.
+
+\section{Математическая постановка}
+Минимизируется целевая функция
+\begin{equation}
+F(X)=\sum_{i=1}^{n}\sum_{j=1}^{n} c_{ij}x_{ij}\rightarrow\min,
+\end{equation}
+при ограничениях на назначения и дополнительных ограничениях по матрицам $D_k$.
+
+Используется функция Лагранжа:
+\begin{equation}
+L(X,\lambda)=\sum_{i,j} c_{ij}x_{ij}+\sum_{k=1}^{K}\lambda_k\left(\sum_{i,j} d_{ij}^{k}x_{ij}-b_k\right),\quad \lambda_k\ge 0.
+\end{equation}
+
+На каждой итерации строится модифицированная матрица стоимости:
+\begin{equation}
+G = C + \sum_{k=1}^{K}\lambda_k D_k,
+\end{equation}
+после чего решается стандартная задача о назначениях для $G$.
+
+\section{Реализованный алгоритм (метод Удзавы)}
+\begin{enumerate}
+  \item Инициализация: ввод $n, K, C, D_k, b_k, \lambda^0$, параметров остановки и шага.
+  \item Решение задачи о назначениях для матрицы $G$ (алгоритм Венгера в реализации \texttt{scipy.optimize.linear\_sum\_assignment}).
+  \item Вычисление субградиента:
+  \[
+    f_k(X)=\sum_{i,j} d_{ij}^{k}x_{ij}-b_k,\; k=1,\dots,K.
+  \]
+  \item Проверка остановки: $\|f(X)\|\le\varepsilon$ или достигнут лимит итераций.
+  \item Обновление множителей:
+  \[
+  \lambda^{t+1}=\left[\lambda^{t}+\psi_t f(X^t)\right]^+,
+  \]
+  где $[\cdot]^+$ --- проекция на неотрицательный ортант.
+\end{enumerate}
+
+Поддержаны два режима шага:
+\begin{itemize}
+  \item гармонический: $\psi_t=\frac{1}{t+1}$;
+  \item постоянный: $\psi_t=\text{const}$.
+\end{itemize}
+
+\section{Архитектура программного средства}
+Решение выполнено в виде клиент--серверного приложения.
+
+\subsection{Backend (Python + Flask)}
+\begin{itemize}
+  \item Модуль \texttt{backend/solver.py}:
+  \begin{itemize}
+    \item валидация входных данных;
+    \item итеративная процедура Удзавы;
+    \item выбор лучшего допустимого решения (или наилучшего по норме субградиента как fallback);
+    \item формирование истории итераций.
+  \end{itemize}
+  \item HTTP API:
+  \begin{itemize}
+    \item \texttt{POST /api/solve} --- запуск расчёта;
+    \item возврат JSON с назначением, значением целевой функции, субградиентом и историей.
+  \end{itemize}
+\end{itemize}
+
+\subsection{Frontend (React + Vite)}
+Пользовательский интерфейс предоставляет:
+\begin{itemize}
+  \item ввод размерности $n$ и числа ограничений $K$;
+  \item редактирование матрицы $C$;
+  \item редактирование набора матриц $D_k$;
+  \item ввод векторов $b$ и $\lambda^0$;
+  \item настройку параметров \texttt{max\_iter}, \texttt{eps}, режима шага;
+  \item запуск вычислений и отображение результатов.
+\end{itemize}
+
+\section{Формат входных данных API}
+\begin{verbatim}
+{
+  "n": 4,
+  "k": 2,
+  "c": [[...], ...],
+  "d": [[[...]], [[...]]],
+  "b": [b1, b2],
+  "lambda0": [0, 0],
+  "max_iter": 200,
+  "eps": 1e-6,
+  "step_mode": "harmonic",
+  "step_const": 0.1
+}
+\end{verbatim}
+
+\section{Формат выходных данных API}
+\begin{verbatim}
+{
+  "best_assignment_zero_based": [...],
+  "best_assignment_one_based": [...],
+  "best_objective": ...,
+  "best_subgradient": [...],
+  "best_iteration": ...,
+  "iterations_done": ...,
+  "history": [...]
+}
+\end{verbatim}
+
+\section{Проверка корректности и ограничения}
+\begin{itemize}
+  \item Проверяются размеры: $C\in\mathbb{R}^{n\times n}$, $D\in\mathbb{R}^{K\times n\times n}$, $b\in\mathbb{R}^{K}$, $\lambda^0\in\mathbb{R}^{K}$.
+  \item Гарантируется проекция множителей Лагранжа на область $\lambda\ge 0$.
+  \item Из-за субградиентного характера метод может сходиться медленно; качество зависит от выбора шага и числа итераций.
+\end{itemize}
+
+\section{Инструкция по запуску}
+\subsection*{Backend}
+\begin{verbatim}
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python server.py
+\end{verbatim}
+
+\subsection*{Frontend}
+\begin{verbatim}
+npm install
+npm run dev
+\end{verbatim}
+
+\section{Вывод}
+В рамках работы реализовано программное средство для численного решения задачи о назначениях с дополнительными ограничениями на основе двойственного субградиентного подхода (метод Удзавы). Решение включает математически обоснованный backend-алгоритм и удобный интерфейс для ввода данных и анализа результатов.
+
+\end{document}
